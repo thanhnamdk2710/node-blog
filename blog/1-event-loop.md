@@ -519,5 +519,397 @@ Key insight: Microtasks are drained COMPLETELY after each callback
 ### 4.4. process.nextTick vs setImmediate
 
 ```ts
+console.log("=== process.nextTick vs setImmediate ===\n");
 
+/*
+Naming confusion:
+- process.nextTick fires IMMEDIATELY after current operation
+- setImmediate fires on the NEXT iteration of event loop
+
+The names are backwards! But can't change due to backward compatibility
+*/
+
+let counter = 0;
+
+// Dangerous: nextTick can starve event loop
+const recursiveNextTick = (): void => {
+  counter++;
+  if (counter < 5) {
+    console.log(`nextTick iteration ${counter}`);
+    process.nextTick(recursiveNextTick);
+  }
+};
+
+// Safe: setImmediate allows I/O to be processedd
+const recursiveImmediate = (): void => {
+  counter++;
+  if (counter < 10) {
+    console.log(`setImmediate iteration ${counter}`);
+    setImmediate(recursiveImmediate);
+  }
+};
+
+// Demo starvation with nextTick
+console.log("Starting nextTick recursion...");
+process.nextTick(recursiveNextTick);
+
+// This I/O will have to wait for all nextTick to complete
+setTimeout(() => {
+  console.log("Timeout executed (was waiting for nextTick to complete)");
+
+  counter = 0;
+  console.log("\nStarting setImmediate recursion...");
+  setImmediate(recursiveImmediate);
+}, 0);
+
+/*
+Output:
+=== process.nextTick vs setImmediate ===
+
+Starting nextTick recursion...
+nextTick iteration 1
+nextTick iteration 2
+nextTick iteration 3
+nextTick iteration 4
+Timeout executed (was waiting for nextTick to complete)
+
+Starting setImmediate recursion...
+setImmediate iteration 1
+setImmediate iteration 2
+setImmediate iteration 3
+setImmediate iteration 4
+setImmediate iteration 5
+setImmediate iteration 6
+setImmediate iteration 7
+setImmediate iteration 8
+setImmediate iteration 9
+*/
+```
+
+### 4.5. Event Loop Visualization
+
+```ts
+console.log("=== Complete Event Loop Visualization ===\n");
+
+// To track order
+const order: string[] = [];
+const log = (msg: string): void => {
+  order.push(msg);
+  console.log(msg);
+};
+
+// Synchronous
+log("1. Script start");
+
+// Macrotask: Timers phase
+setTimeout(() => {
+  log("7. setTimeout 1");
+
+  process.nextTick(() => {
+    log("8. nextTick inside setTimeout");
+  });
+  Promise.resolve().then(() => {
+    log("9. Promise inside setTimeout");
+  });
+}, 0);
+
+setTimeout(() => {
+  log("10. setTimeout 2");
+}, 0);
+
+// Macrotask: Check phase
+setImmediate(() => {
+  log("11. setImmediate 1");
+
+  process.nextTick(() => {
+    log("12. nextTick inside setImmediate");
+  });
+});
+
+setImmediate(() => {
+  log("13. setImmediate 2");
+});
+
+// Microtask: Promise
+Promise.resolve()
+  .then(() => {
+    log("4. Promise 1");
+    return Promise.resolve();
+  })
+  .then(() => {
+    log("6. Promise 2 (chained)");
+  });
+
+// Microtask: queueMicrotask
+queueMicrotask(() => {
+  log("5. queueMicrotask");
+});
+
+// Microtask: nextTick (highest priority)
+process.nextTick(() => {
+  log("3. nextTick 1");
+});
+
+process.nextTick(() => {
+  log("3.5 nextTick 2");
+});
+
+log("2. Script end");
+
+// Final result
+setTimeout(() => {
+  console.log("\n=== Execution Order Summary ===");
+  console.log(order.join("\n"));
+}, 100);
+
+/*
+Expected Output:
+1. Script start
+2. Script end
+3. nextTick 1
+3.5. nextTick 2
+4. Promise 1
+5. queueMicrotask
+6. Promise 2 (chained)
+7. setTimeout 1
+8. nextTick inside setTimeout
+9. Promise inside setTimeout
+10. setTimeout 2
+11. setImmediate 1
+12. nextTick inside setImmediate
+13. setImmediate 2
+*/
+```
+
+## 5. Real-world Examples and Analysis
+
+### 5.1. Classic Interview Question
+
+```ts
+console.log("=== Classic Interview Question ===\n");
+
+async function async1(): Promise<void> {
+  console.log("2. async1 start");
+  await async2();
+  console.log("6. async1 end");
+}
+
+async function async2(): Promise<void> {
+  console.log("3. async2");
+}
+
+console.log("1. script start");
+
+setTimeout(() => {
+  console.log("8. setTimeout");
+}, 0);
+
+async1();
+
+new Promise<void>((resolve) => {
+  console.log("4. promise1");
+  resolve();
+}).then(() => {
+  console.log("7. promise2");
+});
+
+console.log("5. script end");
+
+/*
+Output:
+1. script start
+2. async1 start
+3. async2
+4. promise1
+5. script end
+6. async1 end
+7. promise2
+8. setTimeout
+
+Analysis:
+1-5: Synchronous code (Promise constructor is sync!)
+6-7: Microtasks (await = implicit Promise.then)
+8: Macrotask (setTimeout)
+*/
+```
+
+### 5.2. Real-world API Handler
+
+```ts
+interface User {
+  id: string;
+  name: string;
+  email: string;
+}
+
+interface Order {
+  id: string;
+  userId: string;
+  total: number;
+}
+
+// Simulated async operations
+const fetchUser = (id: string): Promise<User> => {
+  return new Promise((resolve) => {
+    // Simulating database query
+    setTimeout(() => {
+      resolve({ id, name: "Nam Nguyen", email: "namnguyen@example.com" });
+    }, 100);
+  });
+};
+
+const fetchOrders = (userId: string): Promise<Order[]> => {
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      resolve([
+        { id: "order-1", userId, total: 99.99 },
+        { id: "order-2", userId, total: 149.99 },
+      ]);
+    }, 50);
+  });
+};
+
+const sendNotification = (userId: string): void => {
+  // Fire-and-forget with setImmediate to not block response
+  setImmediate(() => {
+    console.log(`Notification sent to user ${userId}`);
+  });
+};
+
+const logAnalytics = (event: string): void => {
+  // Use nextTick for critical logging
+  process.nextTick(() => {
+    console.log(`Analytics: ${event}`);
+  });
+};
+
+// API Handler simulation
+const handleRequest = async (userId: string): Promise<void> => {
+  console.log("1. Request received");
+
+  logAnalytics("request_started");
+
+  try {
+    console.log("2. Fetching user...");
+    const user = await fetchUser(userId);
+    console.log(`3. User fetched: ${user.name}`);
+
+    console.log("4. Fetching orders...");
+    const orders = await fetchOrders(userId);
+    console.log(`5. Orders fetched: ${orders.length} orders`);
+
+    // Non-blocking notification
+    sendNotification(userId);
+
+    console.log("6. Request sent");
+    logAnalytics("request_completed");
+  } catch (error) {
+    console.error("Error:", error);
+    logAnalytics("request_failed");
+  }
+};
+
+// Execute
+handleRequest("user-123");
+console.log("0. Handler called (sync)");
+
+/*
+Output:
+1. Request received
+2. Fetching user...
+0. Handler called (sync)
+Analytics: request_started
+3. User fetched: John Doe
+4. Fetching orders...
+5. Orders fetched: 2 orders
+6. Response sent
+Analytics: request_completed
+Notification sent to user user-123
+*/
+```
+
+### 5.3. Batch Processing
+
+```ts
+interface Item {
+  id: number;
+  data: string;
+}
+
+// Process large batch without blocking event loop
+const processLargeBatch = async (items: Item[]): Promise<void> => {
+  const BATCH_SIZE = 100;
+  const results: string[] = [];
+
+  console.log(`Processing ${items.length} items...`);
+
+  for (let i = 0; i < items.length; i += BATCH_SIZE) {
+    const batch = items.slice(i, i + BATCH_SIZE);
+
+    // Process batch
+    for (const item of batch) {
+      results.push(`Processed: ${item.id}`);
+    }
+
+    console.log(
+      `Processed ${Math.min(i + BATCH_SIZE, items.length)}/${items.length}`
+    );
+
+    // Yield control back to event loop
+    // Allows I/O and timers to be processed between batches
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+
+  console.log("All items processed");
+};
+
+// Alternative: Use process.nextTick for higher priority
+const processWithNextTick = (items: Item[], callback: () => void): void => {
+  let index = 0;
+
+  const processNext = (): void => {
+    const startTime = Date.now();
+
+    // Process for max 10ms before yielding
+    while (index < items.length && Date.now() - startTime < 10) {
+      // Process item
+      index++;
+    }
+
+    console.log(`Processed ${index}/${items.length}`);
+
+    if (index < items.length) {
+      // Continue on next tick
+    } else {
+      callback();
+    }
+  };
+
+  process.nextTick(processNext);
+};
+
+// Demo
+const items: Item[] = Array.from({ length: 500 }, (_, i) => ({
+  id: i,
+  data: `Item ${i}`,
+}));
+
+// Test that I/O still works during processing
+setTimeout(() => {
+  console.log(">>> Timer fired during batch processing");
+}, 0);
+
+processLargeBatch(items);
+
+/*
+Output:
+Processing 500 items...
+Processed 100/500
+Processed 200/500
+>>> Timer fired during batch processing
+Processed 300/500
+Processed 400/500
+Processed 500/500
+All items processed
+*/
 ```
