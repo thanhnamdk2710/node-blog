@@ -7,7 +7,7 @@ setTimeout(() => {
   console.log("Timer executed");
 }, 100);
 
-// Case 2: Has setImmediate - poll phase will move to check phase immeditely
+// Case 2: Has setImmediate - poll phase will move to check phase immediately
 setImmediate(() => {
   console.log("Immediate executed");
 });

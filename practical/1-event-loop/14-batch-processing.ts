@@ -30,8 +30,8 @@ const processLargeBatch = async (items: Item[]): Promise<void> => {
   console.log("All items processed");
 };
 
-// Alternative: Use process.nextTick for higher priority
-const processWithNextTick = (items: Item[], callback: () => void): void => {
+// Alternative: Use setImmediate to yield to event loop properly
+const processWithSetImmediate = (items: Item[]): void => {
   let index = 0;
 
   const processNext = (): void => {
@@ -46,17 +46,16 @@ const processWithNextTick = (items: Item[], callback: () => void): void => {
     console.log(`Processed ${index}/${items.length}`);
 
     if (index < items.length) {
-      // Continue on next tick
-    } else {
-      callback();
+      // Continue on next iteration - allows timers/I/O to run
+      setImmediate(processNext);
     }
   };
 
-  process.nextTick(processNext);
+  setImmediate(processNext);
 };
 
 // Demo
-const items: Item[] = Array.from({ length: 500 }, (_, i) => ({
+const items: Item[] = Array.from({ length: 1_000_000 }, (_, i) => ({
   id: i,
   data: `Item ${i}`,
 }));
@@ -66,7 +65,8 @@ setTimeout(() => {
   console.log(">>> Timer fired during batch processing");
 }, 0);
 
-processLargeBatch(items);
+// processLargeBatch(items);
+processWithSetImmediate(items);
 
 /*
 Output:

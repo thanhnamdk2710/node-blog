@@ -19,7 +19,7 @@ const recursiveNextTick = (): void => {
   }
 };
 
-// Safe: setImmediate allows I/O to be processedd
+// Safe: setImmediate allows I/O to be processed
 const recursiveImmediate = (): void => {
   counter++;
   if (counter < 10) {

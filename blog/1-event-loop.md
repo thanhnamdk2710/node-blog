@@ -14,11 +14,11 @@
 
 ## 1. Why Understanding the Event Loop Matters
 
-Node.js is single-threaded yet can handle thousands of concurrent connections. The secret lies in the Event Loop - the mechanism that that allows Node.js to perform non-blocking I/O operations.
+Node.js is single-threaded yet can handle thousands of concurrent connections. The secret lies in the Event Loop - the mechanism that allows Node.js to perform non-blocking I/O operations.
 
 Understanding the Event Loop helps you:
 
-- Debug timing issues an race conditions
+- Debug timing issues and race conditions
 - Optimize application performance
 - Avoid blocking the main thread
 - Write async code correctly
@@ -236,7 +236,7 @@ setTimeout(() => {
   console.log("Timer executed");
 }, 100);
 
-// Case 2: Has setImmediate - poll phase will move to check phase immeditely
+// Case 2: Has setImmediate - poll phase will move to check phase immediately
 setImmediate(() => {
   console.log("Immediate executed");
 });
@@ -540,7 +540,7 @@ const recursiveNextTick = (): void => {
   }
 };
 
-// Safe: setImmediate allows I/O to be processedd
+// Safe: setImmediate allows I/O to be processed
 const recursiveImmediate = (): void => {
   counter++;
   if (counter < 10) {
@@ -801,7 +801,7 @@ const handleRequest = async (userId: string): Promise<void> => {
     // Non-blocking notification
     sendNotification(userId);
 
-    console.log("6. Request sent");
+    console.log("6. Response sent");
     logAnalytics("request_completed");
   } catch (error) {
     console.error("Error:", error);
@@ -819,7 +819,7 @@ Output:
 2. Fetching user...
 0. Handler called (sync)
 Analytics: request_started
-3. User fetched: John Doe
+3. User fetched: Nam Nguyen
 4. Fetching orders...
 5. Orders fetched: 2 orders
 6. Response sent
@@ -864,7 +864,7 @@ const processLargeBatch = async (items: Item[]): Promise<void> => {
 };
 
 // Alternative: Use process.nextTick for higher priority
-const processWithNextTick = (items: Item[], callback: () => void): void => {
+const processWithSetImmediate = (items: Item[]): void => {
   let index = 0;
 
   const processNext = (): void => {
@@ -879,13 +879,12 @@ const processWithNextTick = (items: Item[], callback: () => void): void => {
     console.log(`Processed ${index}/${items.length}`);
 
     if (index < items.length) {
-      // Continue on next tick
-    } else {
-      callback();
+      // Continue on next tick - allows timers/I/O to run
+      setImmediate(processNext);
     }
   };
 
-  process.nextTick(processNext);
+  setImmediate(processNext);
 };
 
 // Demo
@@ -900,6 +899,7 @@ setTimeout(() => {
 }, 0);
 
 processLargeBatch(items);
+processWithSetImmediate(items);
 
 /*
 Output:
@@ -913,3 +913,416 @@ Processed 500/500
 All items processed
 */
 ```
+
+## 6. Common Pitfalls
+
+### 6.1. nextTick Starvation
+
+```ts
+console.log("=== Pitfall: nextTick Starvation ===\n");
+
+const MAX_ITERATIONS = 10;
+
+// BAD: This will starve I/O indefinitely
+const badRecursion = (): void => {
+  let iterations = 0;
+
+  const recurse = (): void => {
+    iterations++;
+    console.log(`[nextTick] Iteration: ${iterations}`);
+    if (iterations < MAX_ITERATIONS) {
+      process.nextTick(recurse);
+    }
+  };
+
+  process.nextTick(recurse);
+};
+
+// GOOD: Use setImmediate for recursive operation
+const goodRecursion = (): void => {
+  let iterations = 0;
+
+  const recurse = (): void => {
+    iterations++;
+    console.log(`[setImmediate] Iteration: ${iterations}`);
+    if (iterations < MAX_ITERATIONS) {
+      setImmediate(recurse);
+    }
+  };
+
+  setImmediate(recurse);
+};
+
+// Demo: Prove nextTick starves timers
+// console.log("--- Demo: nextTick starves setTimeout ---");
+// setTimeout(() => console.log(">>> Timer fired!"), 0);
+// badRecursion();
+
+// Uncomment to compare:
+console.log("\n--- Demo: setImmediate allows timer to fire ---");
+setTimeout(() => console.log(">>> Timer fired!"), 0);
+goodRecursion();
+```
+
+### 6.2. Unhandled Promise in Callbacks
+
+```ts
+import * as fs from "fs";
+
+console.log("=== Pitfall: Unhandled Promise ===\n");
+
+// BAD: Promise rejection not caught
+fs.readFile(__filename, () => {
+  // Promise rejection will be swallowed
+  Promise.reject(new Error("[BAD] Oops"));
+});
+
+// GOOD: Always handle rejections
+fs.readFile(__filename, () => {
+  Promise.reject(new Error("[GOOD] Oops")).catch((err) => {
+    console.error("Caught error:", err.message);
+  });
+});
+
+// BETTER: Use async/await with try-catch
+fs.readFile(__filename, async () => {
+  try {
+    await Promise.reject(new Error("[BETTER] Oops"));
+  } catch (err) {
+    console.error("Caught error:", (err as Error).message);
+  }
+});
+
+// Global handler (last resort)
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("Unhandled Rejection at:", promise, "reason:", reason);
+});
+```
+
+### 6.3. Timer Drift
+
+```ts
+console.log("=== Pitfall: Timer Drift ===\n");
+
+const INTERVAL = 100; // Target: fire every 100ms
+const ITERATIONS = 5;
+const WORK_TIME = 20; // Simulate 20ms of blocking work
+
+// Helper: simulate blocking work
+const doWork = (ms: number): void => {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    // Block thread
+  }
+};
+
+// BAD: setInterval drift accumulates
+// Expected total time: 5 × 100ms = 500ms
+// Actual: 500ms + (5 × 20ms work) = ~600ms due to drift
+const runBadTimer = (): Promise<void> => {
+  return new Promise((resolve) => {
+    console.log("--- BAD: setInterval (drift accumulates) ---");
+    const startTime = Date.now();
+    let count = 0;
+
+    const interval = setInterval(() => {
+      count++;
+      const elapsed = Date.now() - startTime;
+      const expected = count * INTERVAL;
+      const drift = elapsed - expected;
+
+      doWork(WORK_TIME); // Blocking work causes next interval to delay
+
+      console.log(
+        `  #${count}: elapsed=${elapsed}ms, expected=${expected}ms, drift=+${drift}ms`
+      );
+
+      if (count >= ITERATIONS) {
+        clearInterval(interval);
+        console.log(`  Total drift: +${drift}ms\n`);
+        resolve();
+      }
+    }, INTERVAL);
+  });
+};
+
+// GOOD: Self-correcting timer compensates for drift
+// Adjusts next timeout based on how late/early we fired
+const runGoodTimer = (): Promise<void> => {
+  return new Promise((resolve) => {
+    console.log("--- GOOD: Self-correcting setTimeout ---");
+    const startTime = Date.now();
+    let count = 0;
+    let nextExpected = startTime + INTERVAL;
+
+    const tick = (): void => {
+      count++;
+      const elapsed = Date.now() - startTime;
+      const expected = count * INTERVAL;
+      const drift = elapsed - expected;
+
+      doWork(WORK_TIME); // Same blocking work
+
+      console.log(
+        `  #${count}: elapsed=${elapsed}ms, expected=${expected}ms, drift=+${drift}ms`
+      );
+
+      if (count >= ITERATIONS) {
+        console.log(`  Total drift: +${drift}ms`);
+        resolve();
+        return;
+      }
+
+      // Compensate: subtract drift from next interval
+      nextExpected += INTERVAL;
+      const delay = Math.max(0, nextExpected - Date.now());
+      setTimeout(tick, delay);
+    };
+
+    setTimeout(tick, INTERVAL);
+  });
+};
+
+// Run demos sequentially for clear comparison
+(async () => {
+  await runBadTimer();
+  await runGoodTimer();
+})();
+
+/*
+=== Pitfall: Timer Drift ===
+
+--- BAD: setInterval (drift accumulates) ---
+  #1: elapsed=101ms, expected=100ms, drift=+1ms
+  #2: elapsed=202ms, expected=200ms, drift=+2ms
+  #3: elapsed=303ms, expected=300ms, drift=+3ms
+  #4: elapsed=404ms, expected=400ms, drift=+4ms
+  #5: elapsed=504ms, expected=500ms, drift=+4ms
+  Total drift: +4ms
+
+--- GOOD: Self-correcting setTimeout ---
+  #1: elapsed=102ms, expected=100ms, drift=+2ms
+  #2: elapsed=201ms, expected=200ms, drift=+1ms
+  #3: elapsed=301ms, expected=300ms, drift=+1ms
+  #4: elapsed=401ms, expected=400ms, drift=+1ms
+  #5: elapsed=501ms, expected=500ms, drift=+1ms
+  Total drift: +1ms
+*/
+```
+
+## 7. Best Practices
+
+### 7.1. Choosing the Right Async Primitive
+
+```ts
+// best-practices.ts
+
+/*
+┌─────────────────────────────────────────────────────────────────┐
+│                    When to use what?                            │
+├─────────────────────────────────────────────────────────────────┤
+│ process.nextTick:                                               │
+│   ✓ Emit events before constructor returns                      │
+│   ✓ Ensure callback runs before any I/O                         │
+│   ✗ Don't use for recursion                                     │
+│   ✗ Don't use for deferring heavy work                          │
+├─────────────────────────────────────────────────────────────────┤
+│ setImmediate:                                                   │
+│   ✓ Run after current I/O poll                                  │
+│   ✓ Safe for recursive operations                               │
+│   ✓ Preferred for deferring non-critical work                   │
+├─────────────────────────────────────────────────────────────────┤
+│ setTimeout(fn, 0):                                              │
+│   ✓ When you need timer-like behavior                           │
+│   ✓ Cross-platform (browser + Node)                             │
+│   ✗ Slightly more overhead than setImmediate                    │
+├─────────────────────────────────────────────────────────────────┤
+│ Promise.resolve().then():                                       │
+│   ✓ Standard way to defer in async code                         │
+│   ✓ Runs after nextTick                                         │
+│   ✓ Works in both browser and Node                              │
+├─────────────────────────────────────────────────────────────────┤
+│ queueMicrotask:                                                 │
+│   ✓ Modern, standard microtask queuing                          │
+│   ✓ Same priority as Promise.then                               │
+│   ✓ More explicit than Promise.resolve().then()                 │
+└─────────────────────────────────────────────────────────────────┘
+*/
+```
+
+### 7.2. Event Emitter Pattern
+
+```ts
+import { EventEmitter } from "events";
+
+interface DatabaseEvents {
+  connected: [];
+  error: [err: Error];
+  query: [sql: string, duration: number];
+}
+
+class Database extends EventEmitter<DatabaseEvents> {
+  constructor() {
+    super();
+
+    // GOOD: Use nextTick to emit after constructor returns
+    // Allows listeners to be attached before event fires
+    process.nextTick(() => {
+      this.connect();
+    });
+  }
+
+  private connect(): void {
+    // Simulate async connection
+    setTimeout(() => {
+      this.emit("connected");
+    }, 100);
+  }
+
+  query(sql: string): void {
+    const start = Date.now();
+
+    // Simulate query
+    setTimeout(() => {
+      this.emit("query", sql, Date.now() - start);
+    }, 50);
+  }
+}
+
+console.log("=== Event Emitter Pattern ===\n");
+
+// Usage
+const db = new Database();
+
+// Listeners are attached BEFORE 'connected' event fires
+db.on("connected", () => {
+  console.log("Database connected");
+  db.query("SELECT * FROM users");
+});
+
+db.on("query", (sql, duration) => {
+  console.log(`Query "${sql}" took ${duration}ms`);
+});
+
+/*
+=== Event Emitter Pattern ===
+
+Database connected
+Query "SELECT * FROM users" took 51ms
+*/
+```
+
+### 7.3. Graceful Shutdown
+
+```ts
+import * as http from "http";
+
+class GracefulServer {
+  private server: http.Server;
+  private connections = new Set<any>();
+  private isShuttingDown = false;
+
+  constructor() {
+    this.server = http.createServer((req, res) => {
+      // Simulate slow request
+      setTimeout(() => {
+        res.end("Hello World");
+      }, 100);
+    });
+
+    this.server.on("connection", (conn) => {
+      this.connections.add(conn);
+      conn.on("close", () => {
+        this.connections.delete(conn);
+      });
+    });
+  }
+
+  start(port: number): void {
+    this.server.listen(port, () => {
+      console.log(`Server listening on port ${port}`);
+    });
+
+    // Handle shutdown signals
+    process.on("SIGTERM", () => this.shutdown("SIGTERM"));
+    process.on("SIGINT", () => this.shutdown("SIGINT"));
+  }
+
+  private async shutdown(signal: string): Promise<void> {
+    if (this.isShuttingDown) return;
+    this.isShuttingDown = true;
+
+    console.log(`\n${signal} received. Starting graceful shutdown...`);
+
+    // Stop accepting new connections
+    this.server.close(() => {
+      console.log("Server closed");
+    });
+
+    // Given in-flight requests time to complete
+    const timeout = setTimeout(() => {
+      console.log("Forcing shutdown...");
+      this.connections.forEach((conn) => conn.destroy());
+    }, 10000);
+
+    // Use setImmediate to allow pending I/O to complete
+    setImmediate(() => {
+      // Cleanup resources
+      console.log("Cleaning up...");
+
+      // Use nextTick for final logging
+      process.nextTick(() => {
+        console.log("Shutdown complete");
+        clearTimeout(timeout);
+        process.exit(0);
+      });
+    });
+  }
+}
+
+// Usage
+const server = new GracefulServer();
+server.start(3000);
+
+/*
+Server listening on port 3000
+SIGINT received. Starting graceful shutdown...
+Server closed
+Cleaning up...
+Shutdown complete
+*/
+```
+
+## Summary
+
+### Cheat Sheet
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                    EXECUTION ORDER                               │
+│                                                                  │
+│  1. Synchronous code                                             │
+│  2. process.nextTick queue    ← Drained completely               │
+│  3. Microtask queue           ← Drained completely               │
+│     (Promise.then, queueMicrotask)                               │
+│  4. Macrotask (one at a time, with microtasks between callbacks) │
+│     - Timers (setTimeout, setInterval)                           │
+│     - I/O callbacks                                              │
+│     - setImmediate                                               │
+│     - Close callbacks                                            │
+│                                                                  │
+│  Repeat from step 2 after each macrotask callback                │
+└──────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│                    KEY TAKEAWAYS                                │
+│                                                                 │
+│  • process.nextTick > Promise.then > setTimeout > setImmediate  │
+│  • Inside I/O callback: setImmediate always before setTimeout(0)│
+│  • Microtasks are drained completely between phases             │
+│  • process.nextTick can starve I/O - use carefully              │
+│  • setImmediate is safer for recursive operations               │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+Understanding the Event Loop not only helps you debug better but also helps you design applications with optimal performance. Practice by predicting code output before running it!

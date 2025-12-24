@@ -81,10 +81,10 @@ Output:
 2. Fetching user...
 0. Handler called (sync)
 Analytics: request_started
-3. User fetched: John Doe
+3. User fetched: Nam Nguyen
 4. Fetching orders...
 5. Orders fetched: 2 orders
-6. Response sent
+6. Request sent
 Analytics: request_completed
 Notification sent to user user-123
 */
